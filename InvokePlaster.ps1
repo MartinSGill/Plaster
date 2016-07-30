@@ -1,4 +1,18 @@
 <#
+NOTE TO DEVELOPERS:
+All text displayed to the user except for Write-Debug (or $PSCmdlet.WriteDebug()) text must be added to the
+string tables in:
+    en-US\Plaster.psd1
+    Plaster.psm1
+
+If a new manifest element is added, it must be added to the Schema\PlasterManifest-v1.xsd file and then in
+processed in the appropriate function in this script.  Any changes to <parameter> attributes must be
+processed not only in the ProcessParameter function but also in the dynamicparam function.
+
+Please follow the scripting style of this file when adding new script.
+#>
+
+<#
 .SYNOPSIS
     Invokes the specified plaster template which will scaffold out a file or set of files.
 .DESCRIPTION
@@ -33,7 +47,12 @@ function Invoke-Plaster {
         # prompt and allow the template to over write existing files.
         [Parameter()]
         [switch]
-        $Force
+        $Force,
+
+        # Suppresses the display of the Plaster logo.
+        [Parameter()]
+        [switch]
+        $NoLogo
     )
 
     # Process the template's plaster manifest file to convert parameters defined there into dynamic parameters.
@@ -84,14 +103,14 @@ function Invoke-Plaster {
                 $paramAttribute.HelpMessage = $prompt
                 $attributeCollection.Add($paramAttribute)
 
-                switch ($type) {
-                    'input' {
+                switch -regex ($type) {
+                    'text|user-fullname|user-email' {
                         $param = New-Object System.Management.Automation.RuntimeDefinedParameter `
                                      -ArgumentList ($name, [string], $attributeCollection)
                         break
                     }
 
-                    { 'choice','multichoice' -contains $_ } {
+                    'choice|multichoice' {
                         $choiceNodes = $node.ChildNodes
                         $setValues = New-Object string[] $choiceNodes.Count
                         $i = 0
@@ -151,9 +170,11 @@ __________.__                   __
 (_/
 '@
 
-        $randLogo = $logo[(Get-Random -Minimum 0 -Maximum $logo.Length)]
-        Write-Host $randLogo
-        Write-Host ("=" * 50)
+        if (!$NoLogo) {
+            $randLogo = $logo[(Get-Random -Minimum 0 -Maximum $logo.Length)]
+            Write-Host $randLogo
+            Write-Host ("=" * 50)
+        }
 
         InitializePredefinedVariables $PSCmdlet.GetUnresolvedProviderPathFromPSPath($DestinationPath)
 
@@ -254,7 +275,7 @@ __________.__                   __
                 # Not a dynamic parameter so prompt user for the value but first check for a stored default value.
                 if ($store -and ($null -ne $defaultValueStore[$name])) {
                     $default = $defaultValueStore[$name]
-                    $PSCmdlet.WriteDebug("Read default value '$default' for parameter '$name'.")
+                    $PSCmdlet.WriteDebug("Read default value '$default' for parameter '$name' from default value store.")
 
                     if (($store -eq 'encrypted') -and ($default -is [System.Security.SecureString])) {
                         try {
@@ -268,9 +289,12 @@ __________.__                   __
                     }
                 }
 
-                # Now prompt user for parameter value
+                # Some default values might not come from the template e.g. some are harvested from .gitconfig if it exists
+                $defaultNotFromTemplate = $false
+
+                # Now prompt user for parameter value based on the parameter type
                 switch -regex ($type) {
-                    'input' {
+                    'text' {
                         # Display an appropriate "default" value in the prompt string.
                         if ($default) {
                             if ($store -eq 'encrypted') {
@@ -285,10 +309,11 @@ __________.__                   __
                         $value = PromptForInput $prompt $default
                         $valueToStore = $value
                     }
-                    'author' {
+                    'user-fullname' {
                         # If no default, try to get a name from git config
-                        if (-not $default) {
+                        if (!$default) {
                             $default = GetGitConfigValue('name')
+                            $defaultNotFromTemplate = $true
                         }
 
                         if ($default) {
@@ -305,10 +330,11 @@ __________.__                   __
                         $value = PromptForInput $prompt $default
                         $valueToStore = $value
                     }
-                    'email' {
+                    'user-email' {
                         # If no default, try to get an email from git config
                         if (-not $default) {
                             $default = GetGitConfigValue('email')
+                            $defaultNotFromTemplate = $true
                         }
 
                         if ($default) {
@@ -335,18 +361,18 @@ __________.__                   __
                         $OFS = ","
                         $valueToStore = "$($selections.Indices)"
                     }
-                    default  { throw ($LocalizedData.UnrecognizedAttribute_F2 -f $type, $ParamNode.LocalName) }
+                    default  { throw ($LocalizedData.UnrecognizedParameterType_F2 -f $type, $ParamNode.LocalName) }
                 }
 
                 # If parameter specifies that user's input be stored as the default value,
                 # store it to file if the value has changed.
-                if ($store -and ($default -ne $valueToStore)) {
+                if ($store -and (($default -ne $valueToStore) -or $defaultNotFromTemplate)) {
                     if ($store -eq 'encrypted') {
-                        $PSCmdlet.WriteDebug("Storing new, encrypted default value for parameter '$name'.")
+                        $PSCmdlet.WriteDebug("Storing new, encrypted default value for parameter '$name' to default value store.")
                         $defaultValueStore[$name] = ConvertTo-SecureString -String $valueToStore -AsPlainText -Force
                     }
                     else {
-                        $PSCmdlet.WriteDebug("Storing new default value '$valueToStore' for parameter '$name'.")
+                        $PSCmdlet.WriteDebug("Storing new default value '$valueToStore' for parameter '$name' to default value store.")
                         $defaultValueStore[$name] = $valueToStore
                     }
 
@@ -369,7 +395,9 @@ __________.__                   __
             $condition  = $Node.condition
             if ($condition) {
                 if (!(EvaluateCondition $condition)) {
-                    Write-Verbose "Skipping message '$($text[0..40])', condition evaluated to false."
+                    $debugText = $trimmedText -replace '\r|\n',' '
+                    $maxLength = [Math]::Min(40, $debugText.Length)
+                    $PSCmdlet.WriteDebug("Skipping message '$($debugText.Substring(0, $maxLength))', condition evaluated to false.")
                     return
                 }
             }
@@ -387,7 +415,7 @@ __________.__                   __
             $condition  = $NewModuleManifestNode.condition
             if ($condition) {
                 if (!(EvaluateCondition $condition)) {
-                    Write-Verbose "Skipping module manifest generation for '$dstPath', condition evaluated to false."
+                    $PSCmdlet.WriteDebug("Skipping module manifest generation for '$dstPath', condition evaluated to false.")
                     return
                 }
             }
@@ -410,7 +438,7 @@ __________.__                   __
                 }
 
                 # TODO: Temporary - remove this when this function makes use of ProcessFile
-                WriteOperationStatus 'Create' (ConvertToDestinationRelativePath $dstPath)
+                WriteOperationStatus $LocalizedData.OpCreate (ConvertToDestinationRelativePath $dstPath)
 
                 New-ModuleManifest -Path $dstPath -ModuleVersion $moduleVersion -RootModule $rootModule -Author $author
                 $content = Get-Content -LiteralPath $dstPath -Raw
@@ -425,7 +453,7 @@ __________.__                   __
                 $newContent = [regex]::Replace($content, $pattern, {
                     param($match)
                     $expr = $match.groups[2].value
-                    Write-Verbose "Replacing template expr $expr in '$Path'"
+                    $PSCmdlet.WriteDebug("Replacing template expr $expr in '$Path'")
                     ExpandString $expr
                 },  @('IgnoreCase', 'SingleLine', 'MultiLine'))
 
@@ -452,20 +480,19 @@ __________.__                   __
         }
 
         function ExpandFileSourceSpec([string]$srcRelPath, [string]$dstRelPath) {
+            $srcPath = $PSCmdlet.GetUnresolvedProviderPathFromPSPath((Join-Path $TemplatePath $srcRelPath))
             $dstPath = $PSCmdlet.GetUnresolvedProviderPathFromPSPath((Join-Path $DestinationPath $dstRelPath))
 
             if ($srcRelPath.IndexOfAny([char[]]('*','?')) -lt 0) {
                 # No wildcard spec in srcRelPath so return info on single file
-                $srcPath = $PSCmdlet.GetUnresolvedProviderPathFromPSPath((Join-Path $TemplatePath $srcRelPath))
                 return NewFileCopyInfo $srcPath $dstPath
             }
 
             # Prepare parameter values for call to Get-ChildItem to get list of files based on wildcard spec
             $gciParams = @{}
-            $srcPath = Join-Path $TemplatePath $parent
             $parent = Split-Path $srcPath -Parent
             $leaf = Split-Path $srcPath -Leaf
-            $gciParams['LiteralPath'] = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($parent)
+            $gciParams['LiteralPath'] = $parent
             $gciParams['File'] = $true
 
             if ($leaf -eq '**') {
@@ -479,7 +506,7 @@ __________.__                   __
                 $leaf = Split-Path $parent -Leaf
                 if ($leaf -eq '**') {
                     $parent = Split-Path $parent -Parent
-                    $gciParams['LiteralPath'] = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($parent)
+                    $gciParams['LiteralPath'] = $parent
                     $gciParams['Recurse'] = $true
                 }
             }
@@ -503,7 +530,7 @@ __________.__                   __
             $condition  = $FileNode.condition
             if ($condition) {
                 if (!(EvaluateCondition $condition)) {
-                    Write-Verbose "Skipping file '$dstRelPath', condition evaluated to false."
+                    $PSCmdlet.WriteDebug("Skipping file '$dstRelPath', condition evaluated to false.")
                     return
                 }
             }
@@ -586,7 +613,7 @@ __________.__                   __
             $condition  = $ModifyNode.condition
             if ($condition) {
                 if (!(EvaluateCondition $condition)) {
-                    Write-Verbose "Skipping file modify on '$path', condition evaluated to false."
+                    $PSCmdlet.WriteDebug("Skipping file modify on '$path', condition evaluated to false.")
                     return
                 }
             }
@@ -609,7 +636,7 @@ __________.__                   __
                             $condition  = $node.condition
                             if ($condition) {
                                 if (!(EvaluateCondition $condition)) {
-                                    Write-Verbose "Skipping file modify replace on '$path', condition evaluated to false."
+                                    $PSCmdlet.WriteDebug("Skipping file modify replace on '$path', condition evaluated to false.")
                                     continue
                                 }
                             }
@@ -665,7 +692,7 @@ __________.__                   __
 
         # Outputs the processed template parameters to the verbose stream
         $parameters = Get-Variable -Name PLASTER_* | Out-String
-        Write-Verbose "Parameter values are:`n$($parameters -split "`n")"
+        $PSCmdlet.WriteDebug("Parameter values are:`n$($parameters -split "`n")")
 
         # Stores any updated default values back to the store file.
         if ($flags.DefaultValueStoreDirty) {
@@ -826,7 +853,7 @@ function GetGitConfigValue($name) {
     # Very simplistic git config lookup
     # Won't work with namespace, just use final element, e.g. 'name' instead of 'user.name'
     $gitConfigPath = (Join-Path $env:Home '.gitconfig')
-    Write-Verbose "Looking for '$name' value in Git Config: $gitConfigPath"
+    Write-Debug "Looking for '$name' value in Git config: $gitConfigPath"
     if (Test-Path $gitConfigPath) {
         $matches = Select-String -Path $gitConfigPath -Pattern "\s+$name\s+=\s+(.+)$"
         if (@($matches).Count -gt 0)
