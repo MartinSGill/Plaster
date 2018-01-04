@@ -53,6 +53,7 @@
         'Invoke-Plaster'
         'New-PlasterManifest'
         'Get-PlasterTemplate',
+        'Find-PlasterTemplate',
         'Test-PlasterManifest'
         )
 

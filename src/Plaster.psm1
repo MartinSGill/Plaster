@@ -97,6 +97,7 @@ else {
 . $PSScriptRoot\NewPlasterManifest.ps1
 . $PSScriptRoot\TestPlasterManifest.ps1
 . $PSScriptRoot\GetPlasterTemplate.ps1
+. $PSScriptRoot\FindPlasterTemplate.ps1
 . $PSScriptRoot\InvokePlaster.ps1
 
 Export-ModuleMember -Function *-*
