@@ -1480,6 +1480,18 @@ function InitializePredefinedVariables([string]$TemplatePath, [string]$DestPath)
     Set-Variable -Name PLASTER_Date -Value ($now.ToShortDateString()) -Scope Script
     Set-Variable -Name PLASTER_Time -Value ($now.ToShortTimeString()) -Scope Script
     Set-Variable -Name PLASTER_Year -Value ($now.Year) -Scope Script
+
+    InitializePredefinedGitVariables
+}
+
+function InitializePredefinedGitVariables {
+    if (Get-Command -Name git.exe -ErrorAction SilentlyContinue) {
+        Set-Variable -Name PLASTER_GIT_Name -Value $(git config --get user.name) -Scope Script
+        Set-Variable -Name PLASTER_GIT_Email -Value $(git config --get user.email) -Scope Script
+    } else {
+        Set-Variable -Name PLASTER_GIT_Name -Value $ENV:USERNAME -Scope Script
+        Set-Variable -Name PLASTER_GIT_Email -Value [string]::Empty -Scope Script
+    }
 }
 
 function GetPlasterManifestPathForCulture([string]$TemplatePath, [ValidateNotNull()][CultureInfo]$Culture) {
